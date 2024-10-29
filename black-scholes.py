@@ -1,15 +1,11 @@
 import numpy as np
-import scipy.stats as stats 
+import yfinance as yf
 from scipy.stats import norm
 import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 import sqlite3
-
-import numpy as np
 import plotly.graph_objects as go
-from scipy.stats import norm
-import streamlit as st
 
 # Black-Scholes function
 def black_scholes(stock_price, strike_price, time_to_expiry, interest_rate, volatility):
@@ -20,68 +16,107 @@ def black_scholes(stock_price, strike_price, time_to_expiry, interest_rate, vola
     return call_price, put_price
 
 # Streamlit UI
-st.title("3D Black-Scholes Options Pricer")
+st.title("3D Black-Scholes Options Pricer with Real-Time Data")
 st.sidebar.header("Input Parameters")
 
-stock_price = st.sidebar.number_input("Stock Price", min_value=0.0, value=100.0)
-strike_price = st.sidebar.number_input("Strike Price", min_value=0.0, value=100.0)
+# Get stock ticker from user
+ticker_symbol = st.sidebar.text_input("Enter Stock Ticker", value="AAPL").upper()
+
+# Retrieve stock data
+ticker = yf.Ticker(ticker_symbol)
+stock_info = ticker.history(period="1d")
+stock_price = stock_info["Close"].iloc[-1]
+
+# Retrieve option expiry dates
+option_expiries = ticker.options
+expiry_date = st.sidebar.selectbox("Select Expiry Date", option_expiries)
+
+# Retrieve options chain for selected expiry
+option_chain = ticker.option_chain(expiry_date)
+option_type = st.sidebar.selectbox("Option Type", ["Call", "Put"])
+
+# Select strike prices based on option type
+if option_type == "Call":
+    strikes = option_chain.calls['strike']
+else:
+    strikes = option_chain.puts['strike']
+
+# User selects a strike price
+strike_price = st.sidebar.selectbox("Select Strike Price", strikes)
 interest_rate = st.sidebar.number_input("Interest Rate", min_value=0.0, value=0.05)
 volatility = st.sidebar.number_input("Volatility", min_value=0.0, value=0.2)
 
-# Displaying call and put prices
-call_price, put_price = black_scholes(stock_price, strike_price, 1, interest_rate, volatility)
-st.write(f"Call Option Price: {call_price}")
-st.write(f"Put Option Price: {put_price}")
+# Calculate time to expiry in years
+expiry_datetime = np.datetime64(expiry_date)
+current_datetime = np.datetime64('today')
+time_to_expiry = (expiry_datetime - current_datetime).astype('timedelta64[D]').astype(int) / 365
+
+# Display real-time stock and option data
+st.write(f"Stock Price ({ticker_symbol}): {stock_price}")
+st.write(f"Selected Strike Price: {strike_price}")
+st.write(f"Time to Expiry: {time_to_expiry} years")
+
+# Calculate option prices
+call_price, put_price = black_scholes(stock_price, strike_price, time_to_expiry, interest_rate, volatility)
+st.write(f"Call Option Price: {call_price}" if option_type == "Call" else f"Put Option Price: {put_price}")
 
 # Preparing data for 3D plot
-stock_prices = np.linspace(50, 150, 50)
-time_to_expiry = np.linspace(0.01, 2, 50)
-Stock, Time = np.meshgrid(stock_prices, time_to_expiry)
+stock_prices = np.linspace(stock_price * 0.5, stock_price * 1.5, 50)
+time_to_expiry_range = np.linspace(0.01, 2, 50)
+Stock, Time = np.meshgrid(stock_prices, time_to_expiry_range)
 
-# Calculating call and put prices for the grid
-Call_prices = np.array([black_scholes(S, strike_price, T, interest_rate, volatility)[0] for S, T in zip(np.ravel(Stock), np.ravel(Time))]).reshape(Stock.shape)
-Put_prices = np.array([black_scholes(S, strike_price, T, interest_rate, volatility)[1] for S, T in zip(np.ravel(Stock), np.ravel(Time))]).reshape(Stock.shape)
+# Calculate option prices for the grid
+if option_type == "Call":
+    Prices = np.array([black_scholes(S, strike_price, T, interest_rate, volatility)[0] for S, T in zip(np.ravel(Stock), np.ravel(Time))]).reshape(Stock.shape)
+else:
+    Prices = np.array([black_scholes(S, strike_price, T, interest_rate, volatility)[1] for S, T in zip(np.ravel(Stock), np.ravel(Time))]).reshape(Stock.shape)
 
 # Plotting with Plotly
 fig = go.Figure()
-
-# Add call price surface
-fig.add_trace(go.Surface(z=Call_prices, x=Stock, y=Time, colorscale='Viridis', opacity=0.7, name="Call Option Price"))
-# Add put price surface
-fig.add_trace(go.Surface(z=Put_prices, x=Stock, y=Time, colorscale='Cividis', opacity=0.7, name="Put Option Price"))
+fig.add_trace(go.Surface(z=Prices, x=Stock, y=Time, colorscale='Viridis', opacity=0.7, name="Option Price"))
 
 # Update layout for clarity and style
 fig.update_layout(
-    title="3D Black-Scholes Option Pricing",
+    title=f"3D Black-Scholes {option_type} Option Pricing",
     scene=dict(
         xaxis_title="Stock Price",
         yaxis_title="Time to Expiry",
         zaxis_title="Option Price",
-        xaxis=dict(nticks=10, range=[50, 150]),
+        xaxis=dict(nticks=10, range=[stock_price * 0.5, stock_price * 1.5]),
         yaxis=dict(nticks=10, range=[0, 2]),
-        zaxis=dict(nticks=10, range=[0, np.max(Call_prices) + 10]),
+        zaxis=dict(nticks=10, range=[0, np.max(Prices) + 10]),
     ),
-    legend=dict(x=0.1, y=0.9),
     margin=dict(l=0, r=0, b=0, t=50)
 )
 
 st.plotly_chart(fig)
 
 
+# Heatmap generation function
 def generate_heatmap(strike_price, time_to_expiry, interest_rate):
-    stock_prices = np.linspace(50, 150, 20)
+    # Generate ranges for stock prices and volatilities
+    stock_prices = np.linspace(stock_price * 0.5, stock_price * 1.5, 20)
     volatilities = np.linspace(0.1, 0.5, 20)
-    call_prices = np.array([[black_scholes(price, strike_price, time_to_expiry, interest_rate, vol)[0] for vol in volatilities] for price in stock_prices])
     
+    # Create a 2D array of option prices
+    prices = np.array([
+        [black_scholes(price, strike_price, time_to_expiry, interest_rate, vol)[0 if option_type == "Call" else 1] for vol in volatilities]
+        for price in stock_prices
+    ])
+    
+    # Plot heatmap
     plt.figure(figsize=(10, 8))
-    sns.heatmap(call_prices, xticklabels=np.round(volatilities, 2), yticklabels=np.round(stock_prices, 2), cmap="YlGnBu")
+    sns.heatmap(prices, xticklabels=np.round(volatilities, 2), yticklabels=np.round(stock_prices, 2), cmap="YlGnBu")
     plt.xlabel("Volatility")
     plt.ylabel("Stock Price")
-    plt.title("Call Option Price Heatmap")
+    plt.title(f"{option_type} Option Price Heatmap")
     st.pyplot(plt)
 
+# Call the function with input parameters
 generate_heatmap(strike_price, time_to_expiry, interest_rate)
 
+
+# Data storage function
 def store_data(stock_price, strike_price, time_to_expiry, interest_rate, volatility, call_price, put_price):
     conn = sqlite3.connect("options_data.db")
     cursor = conn.cursor()
@@ -92,4 +127,5 @@ def store_data(stock_price, strike_price, time_to_expiry, interest_rate, volatil
     conn.commit()
     conn.close()
 
+# Store the computed option prices in the database
 store_data(stock_price, strike_price, time_to_expiry, interest_rate, volatility, call_price, put_price)
